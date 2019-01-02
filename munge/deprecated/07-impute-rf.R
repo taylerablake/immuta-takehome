@@ -116,7 +116,6 @@ importance_df %>%
                            filter(variable == "annual_inc"),
                      color = "red",
                      aes(ymin = 0, ymax = importance))
-
 importance_df %>%
       filter(variable == "annual_inc") %>%
       ggplot(., aes(x = masking_level, y = importance)) +
@@ -126,6 +125,27 @@ importance_df %>%
       ylab("variable importance") +
       theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
       xlab("masking level of annual_inc variable")
+
+test_predictions %>%
+      group_by(masking_level, grade) %>%
+      dplyr::summarise(err = sum(grade != predicted_grade)/length(grade)) %>%
+      ungroup %>%
+      print(n = Inf)
+
+test_predictions %>%
+      group_by(masking_level) %>%
+      dplyr::summarise(err = sum(grade != predicted_grade)/length(grade)) %>%
+      ungroup %>%
+      print(n = Inf)
+
+confusion <- test_predictions %>%
+      group_by(masking_level, grade, predicted_grade) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      rename(N = n, predicted = predicted_grade, observed = grade) %>%
+      spread(key = predicted, value = N)
+      
+
 
 gg_df <- data.frame(grade = levels(test_mf$grade),
                     `Test Error` = as.vector(test_error),
