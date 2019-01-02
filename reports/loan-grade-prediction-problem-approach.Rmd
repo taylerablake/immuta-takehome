@@ -1,0 +1,148 @@
+---
+title: "Loan Grade Prediction: Problem Approach"
+output:
+  html_document:
+    df_print: paged
+---
+
+## Problem statement
+
+Predict loan grade (a categorical variable) based on a borrower's annual income, debt to income ratio, payment and borrowing history, term length, geographic area, etc.
+
+## Approach and assumptions
+
+Given the available data, documentation, and apriori, my goal was to eliminate as many redundant variables in the available covariates variables as possible and then assuming that the loans in the dataset are a rafit a simple random forest model to predict loan class. 
+
+The dataset itself posed a few challenges for fitting a reasonable model relatively quickly:
+
+- The number of available covariates is large, and my working knowledge of the terminology in the loan description table is minimal. This makes variable selection slightly more challenging, and while there are a large number of observations, including many non-informative or highly correlated predictors can result in unsatisfactory model performance. 
+
+- There are a large number of missing values, which must be accomodated before any model fitting can be accomplished. Having limited information on how the data was collected as well as limited subject matter knowledge, imputation of most missing data would need to be done in a completely data-driven manner. 
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+
+
+```{r}
+library(ProjectTemplate)
+load.project()
+```
+
+```{r, cache=TRUE}
+
+# loan <- dbFetch(dbSendQuery(conn, "SELECT * FROM lending_club_tbl")) %>%
+#       as_tibble
+# loan_desc <- dbFetch(dbSendQuery(conn, "SELECT * FROM lending_club_descriptions")) %>%
+#       as_tibble
+```
+
+```{r}
+kable(loan %>%
+      mutate_all(is.na) %>%
+      summarize_all(sum) %>%
+      gather(key = column, value = N_missing) %>%
+      filter(N_missing > 0) %>%
+      arrange(desc(N_missing)) %>%
+      dplyr::select(column_name = column,
+                    N_missing) %>%
+      inner_join(., loan_desc)) 
+loan <- loan %>%
+      mutate(annual_income = case_when(application_type == "Joint App" ~ annual_inc_joint,
+                                       application_type == "Individual" ~ annual_inc))
+loan <- loan %>% loan[,-match(sapply(loan, function(x) length(unique(x))) %>%
+                           magrittr::equals(1) %>% which %>%
+                           names, names(loan))] %>%
+      dplyr::select(names(which(colSums(is.na(loan)) == 0)))
+```
+
+
+```{r, fig.width=11, fig.height=12, fig.align='center'}
+set.seed(666)
+train_ind <- sample(1:nrow(loan), size = floor(0.8*nrow(loan)))
+loan_train <- loan[train_ind,]
+char_columns <- sapply(loan_train, is.character) %>%
+      which %>% names %>%
+      sapply(.,
+             function(x){
+                   length(unique(as.vector(data.frame(loan)[,x])))
+             }) %>%
+      magrittr::is_less_than(40) %>%
+      which %>% names
+char_columns
+grid.arrange(loan %>%
+      dplyr::select(loan_status,
+                    purpose,
+                    verification_status) %>%
+      gather(key = column, value = value) %>%
+      ggplot(., aes(x = value)) +
+      geom_bar() + theme_bw() +
+      facet_wrap(~column, nrow = 1, scales = "free") +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1,
+                                       vjust = 1, size = 6)) +
+      xlab(""),
+loan %>%
+      dplyr::select(initial_list_status, grade,
+                    sub_grade) %>%
+      gather(key = column, value = value) %>%
+      ggplot(., aes(x = value)) +
+      geom_bar() + theme_bw() +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1)) +
+      facet_wrap(~column, nrow = 1, scales = "free") +
+      xlab(""),
+loan %>%
+      dplyr::select(application_type,
+                    home_ownership, term) %>%
+      gather(key = column, value = value) %>%
+      ggplot(., aes(x = value)) +
+      geom_bar() + theme_bw() +
+      facet_wrap(~column, nrow = 1, scales = "free") +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1)) +
+      xlab(""),
+loan %>%
+      ggplot(., aes(x = addr_state)) +
+      geom_bar() + theme_bw() +
+      xlab("") +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1)),
+ncol = 1, nrow = 4)
+
+```
+
+```{r, fig.width=10, fig.height=12, fig.align='center'}
+gglist <- list()
+for (this_column in names(which(sapply(loan[,-match("id", names(loan))],
+                                       is.numeric)))) {
+      if (this_column != "policy_code"){
+             gglist <- list.append(gglist,
+                            ggplot(loan, aes_string(x = this_column)) +
+                                  geom_histogram() +
+                                  theme_bw() +
+                                  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)))     
+      }
+}
+marrangeGrob(gglist[1:15], nrow = 5, ncol = 3)
+marrangeGrob(gglist[16:30], nrow = 5, ncol = 3)
+marrangeGrob(gglist[31:45], nrow = 5, ncol = 3)
+marrangeGrob(gglist[46:length(gglist)], nrow = 3,
+             ncol = 3)
+```
+
+
+```{r}
+linear_combos <- caret::findLinearCombos(loan_train %>%
+                                               dplyr::select(names(which(sapply(loan,
+                                                                                is.numeric)))) %>%
+                                               as.matrix(.))
+linear_combos$linearCombos %>%
+      lapply(., function(x){
+            names(which(sapply(loan_train, is.numeric)))[x]            
+      })
+
+loan <- loan %>% dplyr::select(-funded_amnt)
+```
+
+

@@ -1,0 +1,33 @@
+---
+title: "Untitled"
+author: "Tayler Blake"
+date: "December 27, 2018"
+output: html_document
+---
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(ProjectTemplate)
+load.project()
+load(file.path("cache", "loan_desc.RData"))
+load(file.path("cache", "loan.RData"))
+#knitr::kable(loan_desc)
+```
+
+```{r}
+kable(loan %>%
+      mutate_all(is.na) %>%
+      summarize_all(sum) %>%
+      gather(key = column, value = N_missing) %>%
+      arrange(desc(N_missing)) %>%
+      dplyr::select(column_name = column,
+                    N_missing) %>%
+      inner_join(., loan_desc)) 
+```

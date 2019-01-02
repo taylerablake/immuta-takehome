@@ -1,0 +1,71 @@
+---
+title: "04-immuta-build-random-forest"
+author: "Tayler Blake"
+date: "January 1, 2019"
+output: html_document
+---
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, tidy = TRUE)
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(utils)
+if (!("ProjectTemplate" %in% as.vector(installed.packages()[,"Package"]))){
+      install.packages("ProjectTemplate")      
+}
+library(ProjectTemplate)
+load.project()
+```
+
+
+
+```{r}
+
+grade_rf <- ranger(formula = as.formula(paste0("grade ~ ",
+                                               paste(formula_columns,
+                                                     collapse = " + "))),
+                   data = imputed_train_mf,
+                   num.trees = 500,
+                   importance = "impurity",
+                   write.forest = TRUE,
+                   replace = FALSE,
+                   keep.inbag = TRUE,
+                   min.node.size = 5,
+                   num.threads = 8,
+                   seed = 666,
+                   save.memory = FALSE,
+                   verbose = TRUE)
+
+importance_df <- data.frame(variable = names(grade_rf$variable.importance),
+                                             importance = -grade_rf$variable.importance) %>%
+                                        arrange(desc(importance)) %>%
+                                        as_tibble() %>%
+                                        mutate(masking_level = "raw data")
+test_predictions <- predict(grade_rf,
+                            data = imputed_test_mf,
+                            predict.all = FALSE,
+                            seed = 666, num.threads = 8,
+                            verbose = TRUE)
+
+confusion_mat_list <- list.append(list(),
+                                  grade_rf$confusion.matrix)
+test_err <- (as.matrix(grade_rf$confusion.matrix) -
+                     diag(diag(as.matrix(grade_rf$confusion.matrix)))) %>%
+      rowSums
+test_error <- data.frame(grade = levels(imputed_test_mf$grade),
+                         test_err = as.vector(test_err/table(imputed_test_mf$grade)),
+                         masking_level = "raw data")
+
+```
+
+
+
+
+
+
+

@@ -1,0 +1,454 @@
+---
+title: "02-immuta-data-profiling"
+author: "Tayler Blake"
+date: "December 30, 2018"
+output: html_document
+---
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, tidy = TRUE)
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(ProjectTemplate)
+load.project()
+```
+
+This notebook includes part of the preprocessing and data cleaning necessary for creating a model frame to pass to a function call which will execute the model fitting, including imputing any missing values using information contained in other columns for a given record. 
+
+We can start by removing any columns which do not exhibit any variability (which have no utility with respect to fitting a model.)
+
+```{r}
+load(file.path("cache", "loan.RData"))
+loan <- loan[, -match(names(which(sapply(loan,
+                                         function(x) length(unique(x))) == 1)),
+                      names(loan))]
+```
+
+# Date variables
+
+To make use of the date columns, we can create a variable capturing the length of time between the event date and the date that the loan was issued. The credit_tenure_years variable captures the length of time that the loan applicant has been a customer with the lending company, and weeks_btwn_credit_pull_loan_issue captures the amount of time between the most recent credit pull of the loan applicant and the date that the loan was issued. Negative values indicate that the last credit pull was after the loan was issued, and positive values indicate that the most recent credit pull was prior to loan origination.  
+
+```{r}
+loan <- loan %>%
+      mutate(cred_tenure_years = as.numeric(issue_d - earliest_cr_line)/365.5,
+             weeks_btwn_credit_pull_loan_issue = as.numeric(issue_d - last_credit_pull_d)/7) %>%
+      dplyr::select(-c(last_credit_pull_d,
+                       issue_d, 
+                       earliest_cr_line))
+```
+                       
+# Character variables
+
+The term column has whitespace on the left side of the entries, so removing any whitespace from all character variables.
+
+```{r}
+loan <- loan %>%
+      mutate_if(is.character, funs(str_trim(., side = "both")))
+```
+
+Let's take a look at the distribution of the categorical variables:
+```{r, fig.width = 10, fig.height = 12}
+short_char_columns <- sapply(loan, is.character) %>%
+      which %>% names %>%
+      sapply(.,
+             function(x){
+                   length(unique(as.vector(data.frame(loan)[,x])))
+             }) %>%
+      magrittr::is_less_than(40) %>%
+      which %>% names
+short_char_columns
+grid.arrange(loan %>%
+      dplyr::select(loan_status,
+                    purpose,
+                    verification_status) %>%
+      gather(key = column, value = value) %>%
+      ggplot(., aes(x = value)) +
+      geom_bar() + theme_bw() +
+      facet_wrap(~column, nrow = 1, scales = "free") +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1,
+                                       vjust = 1, size = 6)) +
+      xlab(""),
+loan %>%
+      dplyr::select(initial_list_status, grade,
+                    sub_grade) %>%
+      gather(key = column, value = value) %>%
+      ggplot(., aes(x = value)) +
+      geom_bar() + theme_bw() +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1,
+                                       size = 5)) +
+      facet_wrap(~column, nrow = 1, scales = "free") +
+      xlab(""),
+loan %>%
+      dplyr::select(application_type,
+                    home_ownership, term, emp_length) %>%
+      gather(key = column, value = value) %>%
+      ggplot(., aes(x = value)) +
+      geom_bar() + theme_bw() +
+      facet_wrap(~column, nrow = 1, scales = "free") +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1)) +
+      xlab(""),
+loan %>%
+      ggplot(., aes(x = addr_state)) +
+      geom_bar() + theme_bw() +
+      xlab("") +
+      theme(axis.text.x = element_text(angle = 35, hjust = 1, vjust = 1)),
+ncol = 1, nrow = 4)
+```
+
+There are a few categorical variables which are notably unbalanced - application type, status, purpose, and home ownership. How is the "ANY" home ownership category defined? Given more information, depending on the definition, we may want to remove this category.
+
+If we take a closer look at loan title, though there are a reasonable number of factor levels, there are still some very small categories.
+```{r}
+loan %>%
+      group_by(title, grade) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      group_by(title) %>%
+      mutate(p = n/sum(n),
+             N = sum(n)) %>%
+      ungroup %>%
+      ggplot(., aes(x = title, y = p)) +
+      geom_bar(aes(color = grade, fill = grade),
+               stat = "identity") +
+      theme_bw() +
+      scale_color_tableau() +
+      scale_fill_tableau() +
+      theme(axis.text.x = element_text(angle = 45,
+                                       hjust = 1,
+                                       vjust = 1),
+            panel.grid = element_blank()) +
+      geom_text(aes(x = title, y = 1.01, label = paste0("N = ", N)),
+                angle = 90, size = 2, hjust = 0, vjust = 0.5) +
+      scale_y_continuous(breaks = c(0, 1),
+                         limits = c(0, 1.17)) +
+      ylab("")
+```
+
+These can be aggregated and cleaned up:
+
+```{r}
+title <- loan$title
+title[title == "Prescription Drug and Medical Costs"] <- "Medical expenses"
+title[title == "new kitchen for momma!"] <- "Home improvement"
+title[title %in% c("DebtC", "Credit Card/Auto Repair",
+                   "Paying off higher interest cards & auto")] <- "Debt consolidation"
+title[title %in% c("Pay off Lowes Card",
+                   "New Baby and New House (CC Consolidate)")] <- "Credit card refinancing"
+title[title %in% c("Trying to come back to reality!",
+                   "Student Loan",
+                   "Simple Loan Until Contract Is Completed",
+                   "SAVE",
+                   "odymeds",
+                   "considerate",
+                   "new day",
+                   "Learning and training",
+                   "Green loan")] <- "Other"
+title[is.na(title)] <- "Other"
+loan$title <- NULL
+loan <- loan %>% mutate(title = title)
+rm(title)
+
+loan %>%
+      group_by(title, grade) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      group_by(title) %>%
+      mutate(p = n/sum(n),
+             N = sum(n)) %>%
+      ungroup %>%
+      ggplot(., aes(x = title, y = p)) +
+      geom_bar(aes(color = grade, fill = grade),
+               stat = "identity") +
+      theme_bw() +
+      scale_color_tableau() +
+      scale_fill_tableau() +
+      theme(axis.text.x = element_text(angle = 45,
+                                       hjust = 1,
+                                       vjust = 1),
+            panel.grid = element_blank()) +
+      geom_text(aes(x = title, y = 1.01, label = paste0("N = ", N)),
+                angle = 90, size = 2.7, hjust = 0, vjust = 0.5) +
+      scale_y_continuous(breaks = c(0, 1),
+                         limits = c(0, 1.17)) +
+      ylab("")
+```
+
+We see the same issues with loan purpose factor levels, so I have aggregated very small categories again.
+
+```{r}
+loan %>%
+      group_by(purpose, grade) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      group_by(purpose) %>%
+      mutate(p = n/sum(n),
+             N = sum(n)) %>%
+      ungroup %>%
+      ggplot(., aes(purpose, p, fill = grade, color = grade)) +
+      geom_bar(stat = "identity") +
+      theme_bw() +
+      scale_color_tableau() +
+      scale_fill_tableau() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)) +
+      geom_text(aes(x = purpose, y = 1.01, label = paste0("N = ", N)),
+                angle = 90, size = 2.7, hjust = 0, vjust = 0.5,
+                inherit.aes = FALSE) +
+      scale_y_continuous(breaks = c(0, 1),
+                         limits = c(0, 1.17))
+
+purpose <- loan$purpose
+purpose[purpose %in% c("wedding", "educational")] <- "other"
+loan$purpose <- NULL
+loan <- loan %>% mutate(purpose = purpose)
+rm(purpose)
+```
+
+
+It is possible that we need to predict the grade of a loan having a term length different than 36 and 60 months, so we'll treat loan term as a numeric variable. 
+
+```{r}
+loan <- loan %>%
+      mutate(term_length_months = case_when(term == "36 months" ~ 36,
+                                            term == "60 months" ~ 60)) %>%
+      dplyr::select(-term)
+```             
+
+`r sapply(loan, is.character) %>% which %>% names %>% sapply(., function(x){length(unique(as.vector(data.frame(loan)[,x])))}) %>% magrittr::is_greater_than(50) %>% sum` of the categorical variables have more than 50 levels (so I didn't include bar graphs displaying these distributions.)
+
+```{r}
+long_char_columns <- sapply(loan, is.character) %>%
+      which %>% names %>%
+      sapply(.,
+             function(x){
+                   length(unique(as.vector(data.frame(loan)[,x])))
+             }) %>%
+      magrittr::is_greater_than(50) %>%
+      which %>% names
+sapply(loan[,long_char_columns], function(x){length(unique(x))})
+
+```
+
+Each loan has its own distinct url, so it isn't useful for modeling. Information contained in emp_title may be useful for predicting loan grade, but the entries of that column are very unstructured with many levels having only a single observation. and need cleaned up before adding it as a covariate.
+
+Out of the total `r length(unique(loan$emp_title))` unique observed values of emp_title, `r loan %>% group_by(emp_title) %>% dplyr::count() %>% ungroup %>% filter(n == 1) %>% nrow()` of those values are associated with a single loan application. Many of these should be labelled according to the same category; for example, of the unique observed values, `r str_detect(tolower(unique(loan$emp_title)), "manager") %>% sum(., na.rm=TRUE)` contain the word 'manager'. If more time were available, one might investigate using word embedding techniques to make use of this column, but for now, I'll leave it out of the model.
+
+```{r}
+loan <- loan %>% dplyr::select(-emp_title)
+```
+
+There are `r length(unique(loan$zip_code))` unique values of zip_code in the dataset. Effects of zip codes with only a few loans may not even be estimable if enough of them aren't included in the training data, and we won't be able to make predictions for loans with zip codes not present in the training data.
+
+```{r}
+loan %>%
+      group_by(zip_code) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      arrange(n)
+```
+
+To reduce dimensionality and avoid overfitting, we need to aggregate levels of zip_code having small numbers of observations by combining them into a single category. The value for addr_state will capture all of the variability in loan grade attributable to geography for states having only a single value of zip_code, so these zip codes can be aggregated to a single category with no information loss at all as long as state is included in the model. I'll create a category for zip codes having fewer than 100 loans associated with them. Why 100? While somewhat arbitrary, 200 observations should be adequate for estimating the probability of loan grade for each of A, B, C, D, E, F, and G. Alternatively, you could view the number of levels of a factor considered for splitting trees in the construction of the random forest as a hyperparameter. The number of levels considered then becomes part of the model selection problem.
+
+```{r}
+zip_counts <- loan %>%
+      group_by(zip_code) %>%
+      dplyr::count() %>% ungroup %>%
+      filter(n >= 200)
+zip_code <- loan$zip_code
+zip_code[!(zip_code %in% zip_counts$zip_code)] <- "other"
+loan$zip_code <- NULL
+loan <- loan %>% mutate(zip_code = zip_code)
+```
+
+
+# Numeric variables
+
+The bulk of the janitorial work with the numeric variables in the dataset is comprised of dealing with missing values using some old fashioned common sense if possible, eliminating uninformative or highly correlated variables, and addressing any detectable outliers. 
+
+```{r}
+kable(loan %>%
+    mutate_if(is.numeric, is.na) %>%
+      summarize_if(is.logical, sum) %>%
+          gather(key = variable, value = NA_count) %>%
+          arrange(desc(NA_count)))
+```
+
+I examined plots of the univariate distributions for degenerate variables and outliers; the column  mininum, median, and maximum are indicated by the dotted vertical lines:
+
+```{r fig.width=10, fig.height = 12} 
+gglist <- list()
+for (this_column in names(which(sapply(loan[,-match("id", names(loan))],
+                                       is.numeric)))) {
+      if (this_column != c("policy_code", "term_length_months")){
+            gglist <- list.append(gglist,
+                                  ggplot(loan, aes_string(x = this_column)) +
+                                        geom_histogram() +
+                                        theme_bw() +
+                                        theme(axis.text.x = element_text(angle = 45,
+                                                                         hjust = 1, vjust = 1)) +
+                                        geom_vline(aes(xintercept = min(as.vector(data.frame(loan)[, this_column]),
+                                                                        na.rm = T)),
+                                                   alpha = 0.5, linetype = 2) +
+                                        geom_vline(aes(xintercept = max(as.vector(data.frame(loan)[, this_column]),
+                                                                        na.rm = T)),
+                                                   alpha = 0.5, linetype = 2) +
+                                        geom_vline(aes(xintercept = median(as.vector(data.frame(loan)[, this_column]),
+                                                                           na.rm = T)),
+                                                   alpha = 0.5, linetype = 2))
+      }
+}
+      marrangeGrob(gglist[1:15], nrow = 5, ncol = 3)
+marrangeGrob(gglist[16:30], nrow = 5, ncol = 3)
+marrangeGrob(gglist[31:45], nrow = 5, ncol = 3)
+marrangeGrob(gglist[46:length(gglist)], nrow = 3,
+             ncol = 3)
+```
+
+The histogram for weeks_btwn_credit_pull_loan_issue or all loans, the most recent credit pull took place after the loan originated. Does this date also correspond to when the loan grade was assigned? If the loan grade was assigned prior to the most recent credit pull, then this variable along with other credit variables collected at the same time should not be used to predict the loan grade. This is something I would verify before proceeding with model fitting.
+
+Additionally, there are some numeric variables with notable high outliers (tax_liens - max of 85, pub_rec - max of 86):
+
+```{r}
+ggplot(loan, aes(tax_liens, pub_rec)) +
+      geom_jitter(aes(color = grade)) +
+      theme_bw() +
+      scale_color_tableau() +
+      theme(legend.position = "bottom") +
+      guides(color = guide_legend(nrow = 1))
+```
+
+The two observations which are the largest outliers with respect to tax_liens correspond to the same observations which are the largest outliers with respect to pub_rec. The plot below of number of public records versus (number of tax liens + number of publicly recorded bankruptcies) indicates that the types of records that comprise the pub_rec count include both tax_liens count and pub_rec_bankruptcies count. What other types of recorded events contribute to this count? From a modeling standpoint, it is preferential to include the marginal counts as covariates rather than an aggregated count. 
+
+```{r}
+ggplot(loan, aes(tax_liens + pub_rec_bankruptcies, pub_rec)) +
+      geom_jitter(aes(color = grade)) +
+      theme_bw() +
+      scale_color_tableau() +
+      theme(legend.position = "bottom") +
+      guides(color = guide_legend(nrow = 1))
+```
+
+The "joint" variables are missing for non-joint applications, so in order to use them, we need to impute the most sensical value. For individual applications, we'll set the joint income and joint dti to the individual income and dti of the applicant. It is likely that, since there are so few joint applications, joint dti and dti will be highly correlated, as will annual income and joint annual income, but this information may be useful for predicting the grade for the small number of loans with joint applications.
+
+```{r}
+loan <- loan %>%
+      mutate(annual_income_joint = case_when(application_type == "Joint App" ~ annual_inc_joint,
+                                             application_type == "Individual" ~ annual_inc),
+             dti_joint = case_when(application_type == "Joint App" ~ dti_joint,
+                                   application_type == "Individual" ~ dti)) %>%
+      dplyr::select(-annual_inc_joint)
+```
+
+The last_fico_range_low, last_fico_range_high, fico_range_low, fico_range_high variables are two numeric columns constructed to designate into which of `r loan %>% dplyr::select(fico_range_low, fico_range_high) %>% distinct() %>% nrow()` buckets the applicant's fico score falls.
+
+```{r}
+loan %>% group_by(fico_range_low, fico_range_high) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      arrange(fico_range_low, fico_range_high) %>%
+      mutate(fico_range = fico_range_high - fico_range_low) %>%
+      print(n = Inf)
+loan %>% group_by(last_fico_range_low, last_fico_range_high) %>%
+      dplyr::count() %>%
+      ungroup %>%
+      arrange(last_fico_range_low, last_fico_range_high) %>%
+      mutate(last_fico_range = last_fico_range_high - last_fico_range_low) %>%
+      print(n = Inf)
+loan <- loan %>%
+      dplyr::select(-c(last_fico_range_low, fico_range_low))
+```
+
+Only the high end of the range is necessary to determine which bucket the score belongs to, so I'll eliminate the range lows from the model frame.
+
+The open_rv_12m, open_rv_24m, open_il_12m, and open_il_24m entries for certain records can be imputed using the number of open accounts of the appropriate type and the number of months since the most recent and oldest account was opened.
+
+```{r}
+open_rv_12m <- loan$open_rv_12m
+open_rv_24m <- loan$open_rv_24m
+open_il_12m <- loan$open_il_12m
+open_il_24m <- loan$open_il_24m
+open_rv_12m[loan$mo_sin_rcnt_rev_tl_op > 12 &
+                  is.na(open_rv_12m)] <- 0
+open_rv_24m[loan$mo_sin_rcnt_rev_tl_op > 24 &
+                  is.na(open_rv_24m)] <- 0
+open_il_12m[loan$mths_since_rcnt_il > 12 &
+                  is.na(open_il_12m)] <- 0
+open_il_24m[loan$mths_since_rcnt_il > 24 &
+                  is.na(open_il_24m)] <- 0
+loan$open_rv_12m <- loan$open_rv_24m <- loan$open_il_24m <- loan$open_il_12m <- NULL
+loan <- loan %>% mutate(open_rv_12m = open_rv_12m,
+                        open_rv_24m = open_rv_24m,
+                        open_il_12m = open_il_12m,
+                        open_il_24m = open_il_24m)
+rm(open_il_12m)
+rm(open_il_24m)
+rm(open_rv_12m)
+rm(open_rv_24m)
+```
+
+Accounts for which pct_tl_nvr_dlq == 100 do not have any delinquencies associated with them, so their corresponding entries in the mths_since_last_delinq and mths_since_recent_revol_delinq columns are missing. I'll impute these with a negative integer to differentiate these accounts from those which have had a delinquency event.
+
+```{r}
+loan$mths_since_last_delinq[loan$pct_tl_nvr_dlq == 100] <- -100
+loan$mths_since_recent_revol_delinq[loan$pct_tl_nvr_dlq == 100] <- -100
+```
+
+There are other columns with missing values which might be reasonable to impute using common sense and a bit of subject matter knowledge. Further analysis should include investigating how to impute missing values using information in existing columns.
+
+Next, I eliminate any covariates which can be exactly expressed as linear combinations of other variables:
+
+```{r}
+complete_numeric_cols <-
+      names(which(colSums(is.na(loan[,names(which(sapply(loan, is.numeric)))])) == 0))
+complete_numeric_cols <- complete_numeric_cols[complete_numeric_cols != "id"]
+linear_combos <-
+      caret::findLinearCombos(as.matrix(loan[,complete_numeric_cols]))
+linear_combos$linearCombos %>%
+      lapply(., function(x){
+            names(which(sapply(loan, is.numeric)))[x]            
+      })
+loan <- loan %>% dplyr::select(-c(funded_amnt, delinq_2yrs))
+```
+
+and for further dimension reduction, we can eliminate covariates which are highly correlated with other covariates:
+
+```{r}
+correlationMatrix <- cor(loan[ ,names(which(sapply(loan, is.numeric)))],
+                         use = "pairwise.complete.obs") 
+melted_corr <- melt(correlationMatrix)
+names(melted_corr) <- c("var1", "var2", "R")
+melted_corr %>%
+      ggplot(data = ., aes(var1, var2, fill = R)) +
+      geom_tile(color = "white") +
+      scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                           midpoint = 0, limit = c(-1,1), space = "Lab", 
+                           name="Pearson\nCorrelation") +
+      theme_bw()+ 
+      theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                       size = 12, hjust = 1))+
+      coord_fixed() +
+      xlab("") + ylab("") +
+      theme(axis.text.x = element_text(size = 7))
+kable(melted_corr %>%
+      filter(R > 0.85 & var1 != var2))
+```
+
+__Note:__ We could spend much more time with exploratory analysis looking thoroughly at both the bivariate relationships between predictors as well as the bivariate relationships between predictors and loan grade, which could inform both variable selection as well as the form of the relationship between predictors and response. I am forgoing an exhaustive analysis for not only the sake of brevity, but because I am choosing to fit a random forest classifier. While the model fitting procedure for random forests does not invoke any automatic variable selection (fitting procedures for certain classes of models can, such as regularized regression-based methods using lasso penalty or variant thereof), these models are extremely flexible and capable of capturing complex, nonlinear relationships between predictors and the response and interaction effects between predictors. Variable importance measures obtained from fitted models can provide more informative means of variable selection. If variable importance measures indicate that a variable is not informative with respect to accurately predicting the response, then the model may be refit and these variables can be excluded.
+
+```{r}
+loan_mf <- loan %>%
+      dplyr::select(-c(total_pymnt_inv,
+                       out_prncp_inv,
+                       funded_amnt_inv,
+                       total_pymnt,
+                       installment,
+                       avg_cur_bal,
+                       id,
+                       annual_income_joint)) %>%
+      mutate_if(is.character, funs(factor))
+cache("loan_mf")
+```

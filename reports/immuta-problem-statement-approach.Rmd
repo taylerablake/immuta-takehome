@@ -1,0 +1,67 @@
+---
+title: "01 - Loan Grade Prediction: Problem Approach"
+author: "Tayler Blake"
+date: "December 30, 2018"
+output: html_document
+---
+## Problem statement
+
+Predict loan grade (a categorical variable) based on a borrower's annual income, debt to income ratio, payment and borrowing history, term length, geographic area, etc. After implementing a privacy policy on the loan database, refit the model. Assess the performance before and after, noting any changes in model performance between the two situations.
+
+## Approach and assumptions
+
+Given the available data, documentation, and subject matter knowledge (or lack thereof), my goal was to eliminate as many redundant variables in the available covariates variables as possible, and then fit a simple random forest model to the training data. 
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, tidy = TRUE)
+```
+
+```{r setup}
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+```{r}
+library(utils)
+if (!("ProjectTemplate" %in% as.vector(installed.packages()[,"Package"]))){
+      install.packages("ProjectTemplate")      
+}
+library(ProjectTemplate)
+load.project()
+```
+
+The dataset itself posed a few challenges for fitting a reasonable model relatively quickly:
+
+```{r, cache=TRUE}
+conn <- dbConnect(odbc::odbc(), dsn="Immuta SQL Connection")
+loan <- dbFetch(dbSendQuery(conn, "SELECT * FROM lending_club_tbl")) %>%
+      as_tibble
+loan_desc <- dbFetch(dbSendQuery(conn, "SELECT * FROM lending_club_descriptions")) %>%
+      as_tibble
+dbDisconnect(conn)
+```
+
+(We can cache these dataframes to save them for later.)
+
+```{r, cache=TRUE}
+cache("loan")
+cache("loan_desc")
+```
+
+- The number of available covariates is large, and my working knowledge of the terminology in the loan description table is minimal. This makes variable selection slightly more challenging, and while there are a large number of observations, including many non-informative or highly correlated predictors can result in unsatisfactory model performance. 
+
+- There are a large number of missing values, which must be accomodated before any model fitting can be accomplished. Having limited information on how the data was collected as well as limited subject matter knowledge, imputation of most missing data would need to be done in a completely data-driven manner. 
+
+```{r}
+kable(loan %>%
+            dplyr::summarise_all(funs(sum(is.na(.)))) %>%
+            gather(key = column, value = N_missing) %>%
+            filter(N_missing > 0) %>%
+            arrange(desc(N_missing)))
+```
+
+Fitting and tuning random forest classifiers is relatively simple, so variable selection and missing data imputation emcompass most of the heavy lifting in fitting a "first swing" predictive model. I have broken the problem down into tasks which are documented and can be executed via the additional RMarkdown files:
+
+- 02-immuta-data-profiling: outlines brief exploratory data analysis motivating transformations of the original data for use in model fitting and prediction.
+- 03-immuta-missing-data-imputation: demonstrates how I have handled missing data and outlines additional approaches one might implement if additional time and/or resources were available.
+- 04-immuta-build-random-forest: builds a random forest classifier using a sequence of variants of the training dataset,summarizes model performance on a sequence of test sets, and compares the performance accross the versions of the test set to evaluate the impact of privacy policies implemented on the data. The sequences of train and test sets are comprised of the original training and test sets, with the annual_inc column rounded to the nearest dollar, 100 dollars, 1000 dollars, 5000 dollars, and 10000 dollars. 
+
